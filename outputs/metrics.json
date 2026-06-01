@@ -1,0 +1,14 @@
+{
+  "isolation_forest_precision": 0.4437,
+  "isolation_forest_recall": 0.4434,
+  "isolation_forest_f1": 0.4436,
+  "isolation_forest_roc_auc": 0.6406,
+  "autoencoder_precision": 0.9688,
+  "autoencoder_recall": 0.142,
+  "autoencoder_f1": 0.2477,
+  "autoencoder_roc_auc": 0.9803,
+  "n_features": 65,
+  "n_train": 40000,
+  "n_test": 10000,
+  "attack_ratio": 0.35
+}
