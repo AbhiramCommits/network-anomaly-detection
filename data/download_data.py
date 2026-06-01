@@ -259,6 +259,90 @@ def generate_synthetic(n_samples: int = 50000) -> pd.DataFrame:
     down_up_ratio = np.where(total_fwd_len > 0,
                              total_bwd_len.astype(np.float64) / total_fwd_len.astype(np.float64), 0.0)
 
+    # -------------------------------------------------------------------
+    # Inject class-discriminative signal so attack flows differ from benign
+    # -------------------------------------------------------------------
+    is_attack = labels != "BENIGN"
+
+    # Attacks tend to have higher packet rates, smaller packets, shorter flows
+    flow_duration = np.where(
+        is_attack,
+        flow_duration * rng.uniform(0.15, 0.6, size=n),
+        flow_duration,
+    )
+    total_fwd_packets = np.where(
+        is_attack,
+        total_fwd_packets * rng.uniform(1.5, 8.0, size=n),
+        total_fwd_packets,
+    ).astype(np.int64)
+    total_bwd_packets = np.where(
+        is_attack,
+        total_bwd_packets * rng.uniform(0.3, 2.0, size=n),
+        total_bwd_packets,
+    ).astype(np.int64)
+
+    # Attack packets are smaller (typical of scans / DDoS / probes)
+    fwd_pkt_len_mean = np.where(is_attack, fwd_pkt_len_mean * rng.uniform(0.1, 0.5, size=n), fwd_pkt_len_mean)
+    bwd_pkt_len_mean = np.where(is_attack, bwd_pkt_len_mean * rng.uniform(0.1, 0.5, size=n), bwd_pkt_len_mean)
+    fwd_pkt_len_max  = np.where(is_attack, fwd_pkt_len_max * rng.uniform(0.1, 0.5, size=n), fwd_pkt_len_max)
+    bwd_pkt_len_max  = np.where(is_attack, bwd_pkt_len_max * rng.uniform(0.1, 0.5, size=n), bwd_pkt_len_max)
+
+    total_fwd_len = fwd_pkt_len_mean * total_fwd_packets
+    total_bwd_len = bwd_pkt_len_mean * total_bwd_packets
+
+    # Higher flag counts for attacks
+    syn_count = np.where(is_attack, syn_count * rng.integers(2, 8, size=n), syn_count)
+    psh_count = np.where(is_attack, psh_count * rng.integers(2, 5, size=n), psh_count)
+
+    # Recompute derived fields that depend on the modified primitives
+    duration_sec = np.maximum(flow_duration / 1_000_000, 0.001)
+    flow_bytes_s = (total_fwd_len + total_bwd_len) / duration_sec
+    flow_pkts_s  = (total_fwd_packets + total_bwd_packets) / duration_sec
+
+    # Attacks skew IATs lower (higher burstiness)
+    fwd_iat_mean = np.where(is_attack, fwd_iat_mean * rng.uniform(0.05, 0.3, size=n), fwd_iat_mean)
+    fwd_iat_std  = np.where(is_attack, fwd_iat_std * rng.uniform(0.05, 0.3, size=n), fwd_iat_std)
+    bwd_iat_mean = np.where(is_attack, bwd_iat_mean * rng.uniform(0.1, 0.5, size=n), bwd_iat_mean)
+    bwd_iat_std  = np.where(is_attack, bwd_iat_std * rng.uniform(0.1, 0.5, size=n), bwd_iat_std)
+
+    # Shorter active periods, more idle time for attacks
+    active_mean = np.where(is_attack, active_mean * rng.uniform(0.1, 0.5, size=n), active_mean)
+    active_cnt  = np.where(is_attack, active_cnt * rng.integers(1, 4, size=n), active_cnt.astype(np.int64))
+    idle_cnt    = np.where(is_attack, idle_cnt * rng.integers(2, 6, size=n), idle_cnt.astype(np.int64))
+
+    # Different init window patterns
+    init_win_fwd = np.where(is_attack, init_win_fwd * rng.uniform(0.1, 0.6, size=n).astype(np.int64), init_win_fwd)
+
+    # --- Recompute derived fields that depend on the modified primitives ---
+    fwd_pkt_len_std = fwd_pkt_len_mean * rng.uniform(0.1, 0.5, size=n)
+    bwd_pkt_len_std = bwd_pkt_len_mean * rng.uniform(0.1, 0.5, size=n)
+    fwd_pkt_len_min = np.maximum(fwd_pkt_len_mean - fwd_pkt_len_std * rng.uniform(0.5, 1.5, size=n), 20)
+    bwd_pkt_len_min = np.maximum(bwd_pkt_len_mean - bwd_pkt_len_std * rng.uniform(0.5, 1.5, size=n), 20)
+
+    fwd_header_len = total_fwd_packets * rng.choice([20, 40, 60], size=n, p=[0.1, 0.7, 0.2])
+    bwd_header_len = total_bwd_packets * rng.choice([20, 40, 60], size=n, p=[0.1, 0.7, 0.2])
+
+    fwd_psh = rng.binomial(n=np.maximum(psh_count.astype(int), 1), p=0.5, size=n).astype(np.int64)
+    bwd_psh = (psh_count - fwd_psh).clip(0).astype(np.int64)
+
+    min_pkt_len = np.minimum(fwd_pkt_len_min, bwd_pkt_len_min)
+    max_pkt_len = np.maximum(fwd_pkt_len_max, bwd_pkt_len_max)
+    pkt_len_mean = (total_fwd_len + total_bwd_len) / (total_fwd_packets + total_bwd_packets)
+    pkt_len_std  = np.sqrt((fwd_pkt_len_std**2 + bwd_pkt_len_std**2) / 2)
+    pkt_len_var  = pkt_len_std ** 2
+
+    down_up_ratio = np.where(total_fwd_len > 0,
+                             total_bwd_len.astype(np.float64) / total_fwd_len.astype(np.float64), 0.0)
+
+    subflow_fwd_bytes = subflow_fwd_pkts * fwd_pkt_len_mean * 0.3
+    subflow_bwd_bytes = subflow_bwd_pkts * bwd_pkt_len_mean * 0.3
+
+    # Bulk rates depend on flow_duration
+    fwd_bulk_rate = np.where(bulk_fwd_pkts > 0,
+                             bulk_fwd_bytes / (bulk_fwd_pkts * duration_sec + 1e-6), 0.0)
+    bwd_bulk_rate = np.where(bulk_bwd_pkts > 0,
+                             bulk_bwd_bytes / (bulk_bwd_pkts * duration_sec + 1e-6), 0.0)
+
     # --- IPs and identifiers ---
     flow_ids = [f"172.16.0.{i}" for i in range(n)]  # simplified
     src_ips = np.array([_generate_ip() for _ in range(n)])
